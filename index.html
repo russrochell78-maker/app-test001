@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ipregistry 剩余次数监控（20个 Key）</title>
+  <style>
+    :root {
+      --bg:#0f172a;
+      --panel:#111827;
+      --muted:#94a3b8;
+      --text:#e5e7eb;
+      --accent:#22c55e;
+      --danger:#ef4444;
+      --warn:#f59e0b;
+      --card:#0b1220;
+      --border:#1f2937;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";
+      color:var(--text);
+      background: radial-gradient(1200px 600px at 10% -10%, #1b2a4a 0, transparent 60%),
+                  radial-gradient(1000px 600px at 90% 0%, #193a1c 0, transparent 55%),
+                  var(--bg);
+    }
+    .container{max-width:1500px;margin:40px auto;padding:0 16px}
+    .header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px}
+    .title{font-size:20px;font-weight:700}
+    .muted{color:var(--muted)}
+    .panel{
+      background:linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel);
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:16px;
+      box-shadow:0 10px 25px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03);
+    }
+    .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+    input[type="number"],input[type="text"]{
+      background:var(--card);border:1px solid var(--border);color:var(--text);
+      padding:10px 12px;border-radius:10px;outline:none;min-width:0;
+    }
+    input[type="number"]{width:100px}
+    .btn{
+      cursor:pointer;border:1px solid var(--border);background:#0b1220;color:var(--text);
+      padding:8px 12px;border-radius:10px;font-weight:600;
+      transition:all .15s ease;
+    }
+    .btn:hover{opacity:.9}
+    .btn:active{transform:translateY(1px)}
+    .btn-primary{background:var(--accent);color:#06210f;border-color:transparent}
+    .btn-danger{background:var(--danger);border-color:transparent}
+    .cards{
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+      gap:12px;
+    }
+    @media(max-width:1200px){.cards{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:600px){.cards{grid-template-columns:1fr}}
+    .card{
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:12px;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      box-shadow:0 0 8px rgba(0,0,0,.2);
+      min-height:160px;
+    }
+    .card h3{margin:0;font-size:14px;color:var(--muted)}
+    .keyinput{width:100%;font-family:ui-monospace,Menlo,Consolas,monospace}
+    .status-badge{
+      display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;
+      border:1px solid var(--border);font-size:12px;margin-top:2px
+    }
+    .ok{color:#e6ff7e;background:rgba(34,197,94,.18);border-color:rgba(34,197,94,.35)}
+    .warn{color:#3b2600;background:rgba(245,158,11,.18);border-color:rgba(245,158,11,.35)}
+    .err{color:#ff4d4f;background:rgba(239,68,68,.18);border-color:rgba(239,68,68,.35)}
+    .small{font-size:12px;color:var(--muted)}
+    .row-actions{display:flex;gap:6px;margin-top:auto}
+    .footer{margin-top:14px;color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">Ipregistry 剩余次数监控 <span class="muted small">（读取响应头 ipregistry-credits-remaining）</span></div>
+      <div id="runState" class="muted small">未运行</div>
+    </div>
+
+    <div class="panel">
+      <div class="controls">
+        <label>轮询间隔（分钟）<input id="intervalMin" type="number" min="1" step="1" value="1"></label>
+        <button id="saveBtn" class="btn">保存 Keys</button>
+        <button id="checkBtn" class="btn">立即获取</button>
+        <button id="startBtn" class="btn btn-primary">开始定时</button>
+        <button id="stopBtn" class="btn btn-danger">停止定时</button>
+      </div>
+
+      <div id="cards" class="cards"></div>
+
+      <div class="footer">
+        提示：跨域读取响应头依赖对方服务器在 <code>Access-Control-Expose-Headers</code> 中暴露 <code>ipregistry-credits-remaining</code>。
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    const ROWS = 20;
+    const LS_KEYS = "ipr_keys_v4";
+    const LS_INTERVAL = "ipr_interval_min_v4";
+    const cards = document.getElementById("cards");
+    const intervalInput = document.getElementById("intervalMin");
+    const runState = document.getElementById("runState");
+    const state = { timer:null, rows:[] };
+
+    function loadKeys(){
+      try{const arr=JSON.parse(localStorage.getItem(LS_KEYS)||"[]");return Array.isArray(arr)?arr.slice(0,ROWS):[]}catch(e){return [];}
+    }
+    function saveKeys(arr){localStorage.setItem(LS_KEYS,JSON.stringify(arr));}
+    function loadInterval(){const v=parseInt(localStorage.getItem(LS_INTERVAL)||"1",10);return(Number.isFinite(v)&&v>=1)?v:1;}
+    function saveInterval(v){localStorage.setItem(LS_INTERVAL,String(v));}
+
+    function escapeHtml(str){return(str||"").replace(/[&<>"']/g,s=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[s]));}
+
+    function render(){
+      cards.innerHTML="";
+      for(let i=0;i<ROWS;i++){
+        const row=state.rows[i]||{key:"",remaining:"-",lastChecked:"-",status:{cls:"",text:"待检查"}};
+        const div=document.createElement("div");
+        div.className="card";
+        div.innerHTML=`
+          <h3>#${i+1}</h3>
+          <input class="keyinput" type="text" placeholder="粘贴 ipregistry key（留空忽略）" value="${escapeHtml(row.key)}" data-idx="${i}">
+          <div class="small mono" id="rem-${i}">剩余次数：${row.remaining}</div>
+          <div class="small mono" id="time-${i}">上次检查：${row.lastChecked}</div>
+          <span class="status-badge ${row.status.cls}" id="st-${i}">${row.status.text}</span>
+          <div class="row-actions">
+            <button class="btn small" data-action="check" data-idx="${i}">检查</button>
+            <button class="btn small" data-action="clear" data-idx="${i}">清空</button>
+          </div>`;
+        cards.appendChild(div);
+      }
+    }
+
+    function collectKeys(){
+      const inputs=cards.querySelectorAll("input.keyinput");
+      const arr=Array.from(inputs).map(i=>i.value.trim()).filter((v,idx)=>idx<ROWS);
+      saveKeys(arr);
+      for(let i=0;i<ROWS;i++){state.rows[i]=state.rows[i]||{};state.rows[i].key=arr[i]||"";}
+    }
+
+    async function fetchRemaining(key){
+      const url="https://api.ipregistry.co/?key="+encodeURIComponent(key);
+      try{
+        const resp=await fetch(url);
+        const rem=resp.headers.get("ipregistry-credits-remaining");
+        if(rem!==null){const n=Number(rem);return{ok:true,remaining:Number.isFinite(n)?n:rem};}
+        else{return{ok:true,remaining:"Header不可见"};}
+      }catch(err){return{ok:false,error:String(err?.message||err)};}
+    }
+
+    function setRowStatus(i,cls,text){
+      const el=document.getElementById("st-"+i);
+      if(!el)return;
+      el.className="status-badge "+cls;
+      el.textContent=text;
+    }
+
+    function setRowData(i,remaining){
+      const r=document.getElementById("rem-"+i);
+      const t=document.getElementById("time-"+i);
+      if(r){
+        r.textContent="剩余次数："+remaining;
+        // 🔴 如果低于10000，文字也变红
+        if(typeof remaining==="number" && remaining<10000){
+          r.style.color="#ef4444";
+        }else{
+          r.style.color="";
+        }
+      }
+      if(t)t.textContent="上次检查："+new Date().toLocaleString();
+    }
+
+    async function checkOne(i){
+      const key=(state.rows[i]?.key||"").trim();
+      if(!key){setRowStatus(i,"warn","未设置 key");setRowData(i,"-");return;}
+      setRowStatus(i,"","请求中...");
+      const res=await fetchRemaining(key);
+      if(res.ok){
+        let cls,txt;
+        if(typeof res.remaining==="number"){
+          if(res.remaining>=10000){cls="ok";}
+          else{cls="err";} // 🔴 少于10000直接红
+          txt=`OK · ${res.remaining}`;
+        }else{
+          cls="warn";
+          txt=String(res.remaining);
+        }
+        setRowStatus(i,cls,txt);
+        setRowData(i,res.remaining);
+      }else{
+        setRowStatus(i,"err","错误 · "+res.error);
+        setRowData(i,"-");
+      }
+    }
+
+    async function checkAll(){await Promise.allSettled(Array.from({length:ROWS},(_,i)=>checkOne(i)));}
+    function startTimer(){
+      const min=parseInt(intervalInput.value,10);
+      const m=(Number.isFinite(min)&&min>=1)?min:1;
+      intervalInput.value=m;
+      saveInterval(m);
+      stopTimer();
+      state.timer=setInterval(checkAll,m*60*1000);
+      runState.textContent="定时运行中，每 "+m+" 分钟";
+    }
+    function stopTimer(){
+      if(state.timer)clearInterval(state.timer);
+      state.timer=null;
+      runState.textContent="未运行";
+    }
+
+    document.getElementById("saveBtn").onclick=()=>{collectKeys();checkAll();};
+    document.getElementById("checkBtn").onclick=()=>{collectKeys();checkAll();};
+    document.getElementById("startBtn").onclick=()=>{collectKeys();startTimer();checkAll();};
+    document.getElementById("stopBtn").onclick=stopTimer;
+
+    cards.addEventListener("click",e=>{
+      const btn=e.target.closest("button[data-action]");
+      if(!btn)return;
+      const idx=parseInt(btn.dataset.idx,10);
+      if(btn.dataset.action==="check"){collectKeys();checkOne(idx);}
+      else if(btn.dataset.action==="clear"){
+        const inp=cards.querySelector(`input[data-idx="${idx}"]`);
+        if(inp)inp.value="";
+        collectKeys();
+        setRowStatus(idx,"","已清空");
+        setRowData(idx,"-");
+      }
+    });
+
+    (function init(){
+      const keys=loadKeys();
+      for(let i=0;i<ROWS;i++){
+        state.rows[i]={key:keys[i]||"",remaining:"-",lastChecked:"-",status:{cls:"",text:"待检查"}};
+      }
+      render();
+      intervalInput.value=String(loadInterval());
+    })();
+  })();
+  </script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon='{"version":"2024.11.0","token":"9a182eed571e40c28fb84408f8442ff5","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
